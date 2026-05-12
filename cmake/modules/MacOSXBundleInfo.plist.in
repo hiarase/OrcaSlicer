@@ -35,8 +35,7 @@
         <string>Snapmaker Orca Downloads</string>
         <key>CFBundleURLSchemes</key>
         <array>
-          <string>snapmaker-orca</string>
-		  <string>Snapmaker_Orca</string>
+          <string>Snapmaker Orca</string>
         </array>
       </dict>
     </array>
