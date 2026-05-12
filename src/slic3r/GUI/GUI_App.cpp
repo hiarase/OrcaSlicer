@@ -1,5 +1,4 @@
 #include "libslic3r/Technologies.hpp"
-#include "libslic3r/FilamentHotBedNozzleRules.hpp"
 #include "GUI_App.hpp"
 #include "GUI_Init.hpp"
 #include "GUI_ObjectList.hpp"
@@ -17,6 +16,7 @@
 #include "slic3r/GUI/DownloadManager.hpp"
 #include "slic3r/Utils/PresetUpdater.hpp"
 #include "slic3r/Config/Version.hpp"
+#include "libslic3r/MixedFilament.hpp"
 
 // Localization headers: include libslic3r version first so everything in this file
 // uses the slic3r/GUI version (the macros will take precedence over the functions).
@@ -28,6 +28,8 @@
 #include "slic3r/GUI/I18N.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <cctype>
 #include <iterator>
 #include <exception>
 #include <cstdlib>
@@ -178,39 +180,72 @@ namespace pt = boost::property_tree;
 namespace Slic3r {
 namespace GUI {
 
-void GUI_App::load_filament_hot_bed_nozzle_relations()
-{
-    FilamentHotBedNozzleRules::singleton().load();
-}
-
-bool GUI_App::is_bed_filament_supported(const std::string& bed_key, const std::string& filament_type) const
-{
-    return FilamentHotBedNozzleRules::singleton().is_bed_filament_supported(bed_key, filament_type);
-}
-
-bool GUI_App::is_bed_filament_warning(const std::string& bed_key, const std::string& filament_type) const
-{
-    return FilamentHotBedNozzleRules::singleton().is_bed_filament_warning(bed_key, filament_type);
-}
-
-bool GUI_App::is_nozzle_filament_forbidden(const std::string& nozzle_key, const std::string& filament_preset_name,
-                                           NozzleType nozzle_type) const
-{
-    return FilamentHotBedNozzleRules::singleton().is_nozzle_filament_forbidden(nozzle_key, filament_preset_name, nozzle_type);
-}
-
-bool GUI_App::is_nozzle_filament_warning(const std::string& nozzle_key, const std::string& filament_preset_name,
-                                         NozzleType nozzle_type) const
-{
-    return FilamentHotBedNozzleRules::singleton().is_nozzle_filament_warning(nozzle_key, filament_preset_name, nozzle_type);
-}
-
-bool GUI_App::has_filament_hot_bed_nozzle_rules() const
-{
-    return FilamentHotBedNozzleRules::singleton().is_loaded();
-}
-
 class MainFrame;
+
+namespace {
+
+bool startup_profile_enabled()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("ORCA_STARTUP_PROFILE");
+        if (value == nullptr)
+            return false;
+
+        std::string normalized(value);
+        std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
+    }();
+    return enabled;
+}
+
+class StartupProfiler
+{
+public:
+    explicit StartupProfiler(const char* phase)
+        : m_phase(phase)
+        , m_enabled(startup_profile_enabled())
+        , m_phase_start(std::chrono::steady_clock::now())
+        , m_step_start(m_phase_start)
+    {
+        if (m_enabled)
+            BOOST_LOG_TRIVIAL(warning) << "[StartupProfile] phase=" << m_phase << " begin";
+    }
+
+    bool enabled() const { return m_enabled; }
+
+    void mark(const char* step)
+    {
+        if (!m_enabled)
+            return;
+        const auto now      = std::chrono::steady_clock::now();
+        const auto step_ms  = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_step_start).count();
+        const auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_phase_start).count();
+        BOOST_LOG_TRIVIAL(warning) << "[StartupProfile] phase=" << m_phase << " step=" << step << " step_ms=" << step_ms << " total_ms=" << total_ms;
+        m_step_start = now;
+    }
+
+    void note(const std::string& message) const
+    {
+        if (m_enabled)
+            BOOST_LOG_TRIVIAL(warning) << "[StartupProfile] phase=" << m_phase << " " << message;
+    }
+
+    ~StartupProfiler()
+    {
+        if (!m_enabled)
+            return;
+        const auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - m_phase_start).count();
+        BOOST_LOG_TRIVIAL(warning) << "[StartupProfile] phase=" << m_phase << " end total_ms=" << total_ms;
+    }
+
+private:
+    const char*                                m_phase;
+    bool                                       m_enabled;
+    std::chrono::steady_clock::time_point      m_phase_start;
+    std::chrono::steady_clock::time_point      m_step_start;
+};
+
+} // namespace
 
 void start_ping_test()
 {
@@ -799,7 +834,7 @@ static void generic_exception_handle()
         // and terminate the app so it is at least certain to happen now.
         BOOST_LOG_TRIVIAL(error) << boost::format("std::bad_alloc exception: %1%") % ex.what();
         flush_logs();
-        wxString errmsg = wxString::Format(_L("Snapmaker Orca will terminate because of running out of memory."
+        wxString errmsg = wxString::Format(_L("SnapmakerOrca-FullSpectrum will terminate because of running out of memory."
                                               "It may be a bug. It will be appreciated if you report the issue to our team."));
         wxMessageBox(errmsg + "\n\n" + wxString(ex.what()), _L("Fatal error"), wxOK | wxICON_ERROR);
 
@@ -808,13 +843,13 @@ static void generic_exception_handle()
      } catch (const boost::io::bad_format_string& ex) {
      	BOOST_LOG_TRIVIAL(error) << boost::format("Uncaught exception: %1%") % ex.what();
         	flush_logs();
-        wxString errmsg = _L("Snapmaker Orca will terminate because of a localization error. "
+        wxString errmsg = _L("SnapmakerOrca-FullSpectrum will terminate because of a localization error. "
                              "It will be appreciated if you report the specific scenario this issue happened.");
         wxMessageBox(errmsg + "\n\n" + wxString(ex.what()), _L("Critical error"), wxOK | wxICON_ERROR);
         std::terminate();
         //throw;
     } catch (const std::exception& ex) {
-        wxLogError(format_wxstr(_L("Snapmaker Orca got an unhandled exception: %1%"), ex.what()));
+        wxLogError(format_wxstr(_L("SnapmakerOrca-FullSpectrum got an unhandled exception: %1%"), ex.what()));
         BOOST_LOG_TRIVIAL(error) << boost::format("Uncaught exception: %1%") % ex.what();
         flush_logs();
         throw;
@@ -1102,23 +1137,31 @@ GUI_App::GUI_App()
     , m_download_manager(&DownloadManager::getInstance())
 	, m_other_instance_message_handler(std::make_unique<OtherInstanceMessageHandler>())
 {
+    StartupProfiler profiler("GUI_App::GUI_App");
+
 	//app config initializes early becasuse it is used in instance checking in Snapmaker_Orca.cpp
     this->init_app_config();
+    profiler.mark("init_app_config");
     this->init_download_path();
+    profiler.mark("init_download_path");
 #if wxUSE_WEBVIEW_EDGE
     this->init_webview_runtime();
+    profiler.mark("init_webview_runtime");
 #endif
 
     reset_to_active();
+    profiler.mark("reset_to_active");
 
     // test
     m_page_http_server.setPort(PAGE_HTTP_PORT);
     m_page_http_server.set_request_handler(HttpServer::web_server_handle_request);
     m_page_http_server.start();
-    BOOST_LOG_TRIVIAL(info) << "[Flutter] Version:"<<common::get_flutter_version();
+    profiler.mark("m_page_http_server.start");
+    BOOST_LOG_TRIVIAL(info) << "[Flutter] Version:" << common::get_flutter_version();
     BOOST_LOG_TRIVIAL(info) << "[Profile] Version:" << common::get_profile_version();
     flush_logs();
     m_fltviews.set_app(this);
+    profiler.mark("m_fltviews.set_app");
 }
 
 void GUI_App::shutdown(bool isRecreate)
@@ -1980,7 +2023,7 @@ void GUI_App::init_webview_runtime()
 {
     // Check WebView Runtime
     if (!WebView::CheckWebViewRuntime()) {
-        int nRet = wxMessageBox(_L("Snapmaker Orca requires the Microsoft WebView2 Runtime to operate certain features.\nClick Yes to install it now."),
+        int nRet = wxMessageBox(_L("SnapmakerOrca-FullSpectrum requires the Microsoft WebView2 Runtime to operate certain features.\nClick Yes to install it now."),
                                 _L("WebView2 Runtime"), wxYES_NO);
         if (nRet == wxYES) {
             WebView::DownloadAndInstallWebViewRuntime();
@@ -2090,6 +2133,7 @@ void GUI_App::init_app_config()
         }
 #endif // _WIN32
     }
+    MixedFilamentManager::set_auto_generate_enabled(app_config->get_bool("auto_generate_gradients"));
     set_logging_level(Slic3r::level_string_to_boost(app_config->get("log_severity_level")));
 
 }
@@ -2102,11 +2146,14 @@ bool GUI_App::check_older_app_config(Semver current_version, bool backup)
 }
 
 void GUI_App::copy_web_resources() {
+    StartupProfiler profiler("GUI_App::copy_web_resources");
+
     auto data_web_path = boost::filesystem::path(data_dir()) / "web";
     if (!boost::filesystem::exists(data_web_path / "flutter_web")) {
         auto source_path = boost::filesystem::path(resources_dir()) / "web" / "flutter_web";
         auto target_path = data_web_path / "flutter_web";
         copy_directory_recursively(source_path, target_path);
+        profiler.mark("copy flutter_web (missing target)");
     } else {
         auto source_version_file = boost::filesystem::path(resources_dir()) / "web" / "flutter_web" / "version.json";
         auto target_version_file = data_web_path / "flutter_web" / "version.json";
@@ -2122,10 +2169,13 @@ void GUI_App::copy_web_resources() {
                 auto source_path = boost::filesystem::path(resources_dir()) / "web" / "flutter_web";
                 auto target_path = data_web_path / "flutter_web";
                 copy_directory_recursively(source_path, target_path);
+                profiler.mark("copy flutter_web (version upgrade)");
+            } else {
+                profiler.note("flutter_web already up to date");
             }
         }
         catch (std::exception& e) {
-
+            profiler.note(std::string("version check failed: ") + e.what());
         }
     }
 }
@@ -2311,6 +2361,8 @@ class wxBoostLog : public wxLog
 
 bool GUI_App::on_init_inner()
 {
+    StartupProfiler profiler("GUI_App::on_init_inner");
+
     wxLog::SetActiveTarget(new wxBoostLog());
 #if BBL_RELEASE_TO_PUBLIC
     wxLog::SetLogLevel(wxLOG_Message);
@@ -2323,6 +2375,7 @@ bool GUI_App::on_init_inner()
 #ifdef NDEBUG
     wxImage::SetDefaultLoadFlags(0); // ignore waring in release build
 #endif
+    profiler.mark("wx init/log/image handlers");
 
 #if defined(_WIN32) && ! defined(_WIN64)
     // BBS: remove 32bit build prompt
@@ -2361,7 +2414,6 @@ bool GUI_App::on_init_inner()
     const wxString resources_dir = from_u8(Slic3r::resources_dir());
     wxCHECK_MSG(wxDirExists(resources_dir), false,
         wxString::Format(_L("Resources path does not exist or is not a directory: %s"), resources_dir));
-    // filament_hot_bed_nozzles.json: editor copies via PresetUpdater below; rules reload in load_current_presets() after presets. G-code viewer loads in the non-editor branch.
 
 #ifdef __linux__
     if (! check_old_linux_datadir(GetAppName())) {
@@ -2414,7 +2466,7 @@ bool GUI_App::on_init_inner()
             RichMessageDialog
                 dlg(nullptr,
                     wxString::Format(_L("%s\nDo you want to continue?"), msg),
-                    "Snapmaker Orca", wxICON_QUESTION | wxYES_NO);
+                    "SnapmakerOrca-FullSpectrum", wxICON_QUESTION | wxYES_NO);
             dlg.ShowCheckBox(_L("Remember my choice"));
             if (dlg.ShowModal() != wxID_YES) return false;
 
@@ -2450,6 +2502,7 @@ bool GUI_App::on_init_inner()
     init_label_colours();
     init_fonts();
     wxGetApp().Update_dark_mode_flag();
+    profiler.mark("language/theme/fonts");
 
 
 #ifdef _MSW_DARK_MODE
@@ -2487,6 +2540,7 @@ bool GUI_App::on_init_inner()
             remove_old_networking_plugins();
         }
     }
+    profiler.mark("version/network plugin cleanup");
 
     if(app_config->get("version") != SLIC3R_VERSION) {
         app_config->set("version", SLIC3R_VERSION);
@@ -2521,11 +2575,14 @@ bool GUI_App::on_init_inner()
     // just checking for existence of Slic3r::data_dir is not enough : it may be an empty directory
     // supplied as argument to --datadir; in that case we should still run the wizard
     preset_bundle->setup_directories();
+    profiler.mark("preset_bundle->setup_directories");
 
     copy_web_resources();
+    profiler.mark("copy_web_resources");
 
     if (m_init_app_config_from_older)
         copy_older_config();
+    profiler.mark("copy_older_config_if_needed");
 
     if (is_editor()) {
 #ifdef __WXMSW__
@@ -2538,14 +2595,12 @@ bool GUI_App::on_init_inner()
             associate_files(L"stp");
         }
         associate_url(L"Snapmaker_Orca");
-        associate_url(L"snapmaker-orca");
 
         if (app_config->get("associate_gcode") == "true")
             associate_files(L"gcode");
 #endif // __WXMSW__
 
         preset_updater = new PresetUpdater();
-        // filament_hot_bed_nozzles.json is copied here; FilamentHotBedNozzleRules reloads in load_current_presets() (startup, recreate_GUI, preset UI sync).
         Bind(EVT_SLIC3R_VERSION_ONLINE, [this](const wxCommandEvent& evt) {
             if (this->plater_ != nullptr) {
 
@@ -2583,7 +2638,7 @@ bool GUI_App::on_init_inner()
                 wxString tips = wxString::Format(_L("Click to download new version in default browser: %s"), version_str);
                 DownloadDialog dialog(this->mainframe,
                     tips,
-                    _L("The Snapmaker Orca needs an upgrade"),
+                    _L("SnapmakerOrca-FullSpectrum needs an upgrade"),
                     false,
                     wxCENTER | wxICON_INFORMATION);
                 dialog.SetExtendedMessage(description_text);
@@ -2644,14 +2699,13 @@ bool GUI_App::on_init_inner()
         if (app_config->get("associate_gcode") == "true")
             associate_files(L"gcode");
 #endif // __WXMSW__
-        // G-code viewer: no PresetUpdater; rules load from bundled resources path only.
-        load_filament_hot_bed_nozzle_relations();
     }
 
     // Suppress the '- default -' presets.
     preset_bundle->set_default_suppressed(true);
 
     preset_bundle->backup_user_folder();
+    profiler.mark("preset_bundle->backup_user_folder");
 
     Bind(EVT_SHOW_IP_DIALOG, &GUI_App::show_ip_address_enter_dialog_handler, this);
 
@@ -2676,7 +2730,9 @@ bool GUI_App::on_init_inner()
         }
     } */
     copy_network_if_available();
+    profiler.mark("copy_network_if_available");
     on_init_network();
+    profiler.mark("on_init_network");
 
     if (m_agent && m_agent->is_user_login()) {
         enable_user_preset_folder(true);
@@ -2696,6 +2752,7 @@ bool GUI_App::on_init_inner()
             show_error(nullptr, ex.what());
         }
     //}
+    profiler.mark("preset_bundle->load_presets");
 
 #ifdef WIN32
 #if !wxVERSION_EQUAL_OR_GREATER_THAN(3,1,3)
@@ -2718,6 +2775,7 @@ bool GUI_App::on_init_inner()
             wxLaunchDefaultBrowser(downloadUlr);
         });
     }
+    profiler.mark("mainframe construction");
 
     // hide settings tabs after first Layout
     if (is_editor()) {
@@ -2743,6 +2801,7 @@ bool GUI_App::on_init_inner()
     }
     else
         load_current_presets();
+    profiler.mark("load_current_presets");
 
     if (plater_ != nullptr) {
         plater_->reset_project_dirty_initial_presets();
@@ -2755,6 +2814,7 @@ bool GUI_App::on_init_inner()
 #endif
     mainframe->Show(true);
     BOOST_LOG_TRIVIAL(info) << "main frame firstly shown";
+    profiler.mark("mainframe->Show");
 
     obj_list()->set_min_height();
 
@@ -2827,9 +2887,11 @@ bool GUI_App::on_init_inner()
         m_config_corrupted = false;
         show_error(nullptr,
                    _u8L(
-                       "The Snapmaker Orca configuration file may be corrupted and cannot be parsed.\nSnapmaker Orca has attempted to recreate the "
+                       "The SnapmakerOrca-FullSpectrum configuration file may be corrupted and cannot be parsed.\nSnapmakerOrca-FullSpectrum has attempted to recreate the "
                        "configuration file.\nPlease note, application settings will be lost, but printer profiles will not be affected."));
     }
+
+    profiler.mark("on_init_inner return");
 
     return true;
 }
@@ -2976,16 +3038,21 @@ void GUI_App::copy_network_if_available()
 
 bool GUI_App::on_init_network(bool try_backup)
 {
+    StartupProfiler profiler("GUI_App::on_init_network");
+
     bool create_network_agent = false;
     auto should_load_networking_plugin = app_config->get_bool("installed_networking");
     if(!should_load_networking_plugin) {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "Don't load plugin as installed_networking is false";
+        profiler.note("installed_networking=false, plugin load skipped");
     } else {
     int load_agent_dll = Slic3r::NetworkAgent::initialize_network_module();
+    profiler.mark("NetworkAgent::initialize_network_module");
 __retry:
     if (!load_agent_dll) {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": on_init_network, load dll ok";
         if (check_networking_version()) {
+            profiler.mark("check_networking_version");
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": on_init_network, compatibility version";
             auto bambu_source = Slic3r::NetworkAgent::get_bambu_source_entry();
             if (!bambu_source) {
@@ -3002,6 +3069,7 @@ __retry:
                 int result = Slic3r::NetworkAgent::unload_network_module();
                 BOOST_LOG_TRIVIAL(info) << "on_init_network, version mismatch, unload_network_module, result = " << result;
                 load_agent_dll = Slic3r::NetworkAgent::initialize_network_module(true);
+                profiler.mark("initialize_network_module(backup)");
                 try_backup = false;
                 goto __retry;
             }
@@ -3068,6 +3136,7 @@ __retry:
             std::string country_code = app_config->get_country_code();
             m_agent->set_country_code(country_code);
             m_agent->start();
+            profiler.mark("m_agent->start");
         }
     }
     else {
@@ -3080,6 +3149,8 @@ __retry:
         if (!m_user_manager)
             m_user_manager = new Slic3r::UserManager();
     }
+
+    profiler.note(std::string("create_network_agent=") + (create_network_agent ? "true" : "false"));
 
     return true;
 }
@@ -3551,16 +3622,6 @@ void GUI_App::check_printer_presets()
 void switch_window_pools();
 void release_window_pools();
 
-void GUI_App::schedule_recreate_gui_when_no_modal(const wxString &msg_name)
-{
-    CallAfter([this, msg_name]() {
-        dismiss_modal_msg_update_config_with_cancel();
-        if (m_is_recreating_gui)
-            return;
-        recreate_GUI(msg_name);
-    });
-}
-
 void GUI_App::recreate_GUI(const wxString &msg_name)
 {
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "recreate_GUI enter";
@@ -3597,6 +3658,8 @@ void GUI_App::recreate_GUI(const wxString &msg_name)
         mainframe->select_tab(size_t(MainFrame::tp3DEditor));
     // Propagate model objects to object list.
     sidebar().obj_list()->init();
+    //sidebar().aux_list()->init_auxiliary();
+    //mainframe->m_auxiliary->init_auxiliary();
     SetTopWindow(mainframe);
 
     dlg.Update(30, _L("Rebuild") + dots);
@@ -3606,6 +3669,7 @@ void GUI_App::recreate_GUI(const wxString &msg_name)
     m_printhost_job_queue.reset(new PrintHostJobQueue(mainframe->printhost_queue_dlg()));
     load_current_presets();
     mainframe->Show(true);
+    //mainframe->refresh_plugin_tips();
 
     dlg.Update(90, _L("Loading a mode view") + dots);
 
@@ -3619,11 +3683,18 @@ void GUI_App::recreate_GUI(const wxString &msg_name)
     //BBS: trigger restore project logic here, and skip confirm
     plater_->trigger_restore_project(1);
 
+    // #ys_FIXME_delete_after_testing  Do we still need this  ?
+//     CallAfter([]() {
+//         // Run the config wizard, don't offer the "reset user profile" checkbox.
+//         config_wizard_startup(true);
+//     });
+
+
     update_publish_status();
 
     m_is_recreating_gui = false;
 
-    //reload home and device page
+    //// 重新加载首页和设备页
     sm_disconnect_current_machine(true);
     auto devices = wxGetApp().app_config->get_devices();
     for (auto iter = devices.begin(); iter != devices.end();) {
@@ -3634,20 +3705,40 @@ void GUI_App::recreate_GUI(const wxString &msg_name)
         }
     }
 
+
+
+    // wxGetApp().mainframe->plater()->sidebar().update_all_preset_comboboxes(true);
+
+    // auto url = wxString::FromUTF8(LOCALHOST_URL + std::to_string(PAGE_HTTP_PORT) + "/web/flutter_web/index.html?path=2");
+    // wxGetApp().mainframe->load_printer_url(url);
+
     bool use_new_connection = wxGetApp().app_config->get("use_new_connect") == "true";
+
     const auto& edit_preset = preset_bundle->printers.get_edited_preset();
 
-    auto printer_config    = wxGetApp().preset_bundle->printers.get_edited_preset().config;
-    auto printer_model_opt = printer_config.option<ConfigOptionString>("printer_model");
-    bool is_snapmaker_u1   = false;
-    if (printer_model_opt) {
-        std::string printer_model = printer_model_opt->value;
-        is_snapmaker_u1           = boost::icontains(printer_model, "Snapmaker") && boost::icontains(printer_model, "U1");
+    std::string local_name = "";
+    if (edit_preset.is_system) {
+        local_name = edit_preset.name;
+    } else {
+        const auto& base_preset = preset_bundle->printers.get_preset_base(edit_preset);
+        if (base_preset)
+            local_name = base_preset->name;
+        else
+            local_name = "";
     }
+    local_name.erase(std::remove(local_name.begin(), local_name.end(), '('), local_name.end());
+    local_name.erase(std::remove(local_name.begin(), local_name.end(), ')'), local_name.end());
+
+    // Snapmaker U1
+    std::string test_preset_name = "Snapmaker U1 0.4 nozzle";
+    bool        is_test          = (test_preset_name == local_name);
+
     
+    
+
     if (!preset_bundle->is_bbl_vendor()) {
-        if (is_snapmaker_u1) {
-            wxString url      = wxString::FromUTF8(LOCALHOST_URL + std::to_string(get_page_http_port()) + "/web/flutter_web/index.html?path=2");
+        if (is_test) {
+            wxString url      = wxString::FromUTF8(LOCALHOST_URL + std::to_string(PAGE_HTTP_PORT) + "/web/flutter_web/index.html?path=2");
             auto     real_url = wxGetApp().get_international_url(url);
             mainframe->load_printer_url(real_url);
         } else {
@@ -3657,8 +3748,14 @@ void GUI_App::recreate_GUI(const wxString &msg_name)
         }
     }
 
+
+
+
+
+    // wcp订阅
     wxGetApp().device_card_notify(devices);
     
+
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "recreate_GUI exit";
 }
 
@@ -4431,7 +4528,7 @@ void GUI_App::on_http_error(wxCommandEvent &evt)
 
     // Version limit
     if (code == HttpErrorVersionLimited) {
-        MessageDialog msg_dlg(nullptr, _L("The version of Snapmaker Orca is too low and needs to be updated to the latest version before it can be used normally"), "", wxAPPLY | wxOK);
+        MessageDialog msg_dlg(nullptr, _L("The version of SnapmakerOrca-FullSpectrum is too low and needs to be updated to the latest version before it can be used normally"), "", wxAPPLY | wxOK);
         if (msg_dlg.ShowModal() == wxOK) {
         }
 
@@ -4977,7 +5074,7 @@ std::string GUI_App::format_display_version()
 {
     if (!version_display.empty()) return version_display;
 
-    version_display = Snapmaker_VERSION;
+    version_display = std::string("Snapmaker Orca ") + Snapmaker_VERSION + " / FullSpectrum " + FULLSPECTRUM_VERSION;
     return version_display;
 }
 
@@ -5689,14 +5786,14 @@ bool GUI_App::load_language(wxString language, bool initial)
 
     if (! wxLocale::IsAvailable(language_info->Language)) {
     	// Loading the language dictionary failed.
-    	wxString message = "Switching Snapmaker Orca to language " + language_info->CanonicalName + " failed.";
+        wxString message = "Switching SnapmakerOrca-FullSpectrum to language " + language_info->CanonicalName + " failed.";
 #if !defined(_WIN32) && !defined(__APPLE__)
         // likely some linux system
         message += "\nYou may need to reconfigure the missing locales, likely by running the \"locale-gen\" and \"dpkg-reconfigure locales\" commands.\n";
 #endif
         if (initial)
         	message + "\n\nApplication will close.";
-        wxMessageBox(message, "Snapmaker Orca - Switching language failed", wxOK | wxICON_ERROR);
+        wxMessageBox(message, "SnapmakerOrca-FullSpectrum - Switching language failed", wxOK | wxICON_ERROR);
         if (initial)
 			std::exit(EXIT_FAILURE);
 		else
@@ -5855,6 +5952,146 @@ void  GUI_App::show_ip_address_enter_dialog_handler(wxCommandEvent& evt)
     show_modal_ip_address_enter_dialog(title);
 }
 
+//void GUI_App::add_config_menu(wxMenuBar *menu)
+//void GUI_App::add_config_menu(wxMenu *menu)
+//{
+//    auto local_menu = new wxMenu();
+//    wxWindowID config_id_base = wxWindow::NewControlId(int(ConfigMenuCnt));
+//
+//    const auto config_wizard_name = _(ConfigWizard::name(true));
+//    const auto config_wizard_tooltip = from_u8((boost::format(_utf8(L("Open %s"))) % config_wizard_name).str());
+//    // Cmd+, is standard on OS X - what about other operating systems?
+//    if (is_editor()) {
+//        local_menu->Append(config_id_base + ConfigMenuWizard, config_wizard_name + dots, config_wizard_tooltip);
+//        local_menu->Append(config_id_base + ConfigMenuUpdate, _L("Check for Configuration Updates"), _L("Check for configuration updates"));
+//        local_menu->AppendSeparator();
+//    }
+//    local_menu->Append(config_id_base + ConfigMenuPreferences, _L("Preferences") + dots +
+//#ifdef __APPLE__
+//        "\tCtrl+,",
+//#else
+//        "\tCtrl+P",
+//#endif
+//        _L("Application preferences"));
+//    wxMenu* mode_menu = nullptr;
+//    if (is_editor()) {
+//        local_menu->AppendSeparator();
+//        mode_menu = new wxMenu();
+//        mode_menu->AppendRadioItem(config_id_base + ConfigMenuModeSimple, _L("Simple"), _L("Simple Mode"));
+//        mode_menu->AppendRadioItem(config_id_base + ConfigMenuModeAdvanced, _L("Advanced"), _L("Advanced Mode"));
+//        Bind(wxEVT_UPDATE_UI, [this](wxUpdateUIEvent& evt) { if (get_mode() == comSimple) evt.Check(true); }, config_id_base + ConfigMenuModeSimple);
+//        Bind(wxEVT_UPDATE_UI, [this](wxUpdateUIEvent& evt) { if (get_mode() == comAdvanced) evt.Check(true); }, config_id_base + ConfigMenuModeAdvanced);
+//
+//        local_menu->AppendSubMenu(mode_menu, _L("Mode"), wxString::Format(_L("%s Mode"), SLIC3R_APP_NAME));
+//    }
+//    local_menu->AppendSeparator();
+//    local_menu->Append(config_id_base + ConfigMenuLanguage, _L("Language"));
+//    if (is_editor()) {
+//        local_menu->AppendSeparator();
+//    }
+//
+//    local_menu->Bind(wxEVT_MENU, [this, config_id_base](wxEvent &event) {
+//        switch (event.GetId() - config_id_base) {
+//        case ConfigMenuWizard:
+//            run_wizard(ConfigWizard::RR_USER);
+//            break;
+//		case ConfigMenuUpdate:
+//			check_updates(true);
+//			break;
+//#ifdef __linux__
+//        case ConfigMenuDesktopIntegration:
+//            show_desktop_integration_dialog();
+//            break;
+//#endif
+//        case ConfigMenuSnapshots:
+//            //BBS do not support task snapshot
+//            break;
+//        case ConfigMenuPreferences:
+//        {
+//            //BBS GUI refactor: remove unuse layout logic
+//            //bool app_layout_changed = false;
+//            {
+//                // the dialog needs to be destroyed before the call to recreate_GUI()
+//                // or sometimes the application crashes into wxDialogBase() destructor
+//                // so we put it into an inner scope
+//                PreferencesDialog dlg(mainframe);
+//                dlg.ShowModal();
+//                //BBS GUI refactor: remove unuse layout logic
+//                //app_layout_changed = dlg.settings_layout_changed();
+//                if (dlg.seq_top_layer_only_changed())
+//                    this->plater_->refresh_print();
+//
+//                if (dlg.recreate_GUI()) {
+//                    recreate_GUI(_L("Restart application") + dots);
+//                    return;
+//                }
+//#ifdef _WIN32
+//                if (is_editor()) {
+//                    if (app_config->get("associate_3mf") == "true")
+//                        associate_3mf_files();
+//                    if (app_config->get("associate_stl") == "true")
+//                        associate_stl_files();
+//                }
+//                else {
+//                    if (app_config->get("associate_gcode") == "true")
+//                        associate_gcode_files();
+//                }
+//#endif // _WIN32
+//            }
+//            //BBS GUI refactor: remove unuse layout logic
+//            /*if (app_layout_changed) {
+//                // hide full main_sizer for mainFrame
+//                mainframe->GetSizer()->Show(false);
+//                mainframe->update_layout();
+//                mainframe->select_tab(size_t(0));
+//            }*/
+//            break;
+//        }
+//        case ConfigMenuLanguage:
+//        {
+//            /* Before change application language, let's check unsaved changes on 3D-Scene
+//             * and draw user's attention to the application restarting after a language change
+//             */
+//            {
+//                // the dialog needs to be destroyed before the call to switch_language()
+//                // or sometimes the application crashes into wxDialogBase() destructor
+//                // so we put it into an inner scope
+//                wxString title = is_editor() ? wxString(SLIC3R_APP_NAME) : wxString(GCODEVIEWER_APP_NAME);
+//                title += " - " + _L("Choose language");
+//                //wxMessageDialog dialog(nullptr,
+//                MessageDialog dialog(nullptr,
+//                    _L("Switching the language requires application restart.\n") + "\n\n" +
+//                    _L("Do you want to continue?"),
+//                    title,
+//                    wxICON_QUESTION | wxOK | wxCANCEL);
+//                if (dialog.ShowModal() == wxID_CANCEL)
+//                    return;
+//            }
+//
+//            switch_language();
+//            break;
+//        }
+//        case ConfigMenuFlashFirmware:
+//            //BBS FirmwareDialog::run(mainframe);
+//            break;
+//        default:
+//            break;
+//        }
+//    });
+//
+//    using std::placeholders::_1;
+//
+//    if (mode_menu != nullptr) {
+//        auto modfn = [this](int mode, wxCommandEvent&) { if (get_mode() != mode) save_mode(mode); };
+//        mode_menu->Bind(wxEVT_MENU, std::bind(modfn, comSimple, _1), config_id_base + ConfigMenuModeSimple);
+//        mode_menu->Bind(wxEVT_MENU, std::bind(modfn, comAdvanced, _1), config_id_base + ConfigMenuModeAdvanced);
+//    }
+//
+//    // BBS
+//    //menu->Append(local_menu, _L("Configuration"));
+//    menu->AppendSubMenu(local_menu, _L("Configuration"));
+//}
+
 void GUI_App::open_preferences(size_t open_on_tab, const std::string& highlight_option)
 {
     bool app_layout_changed = false;
@@ -5886,7 +6123,6 @@ void GUI_App::open_preferences(size_t open_on_tab, const std::string& highlight_
                 associate_files(L"stp");
             }
             associate_url(L"Snapmaker_Orca");
-            associate_url(L"snapmaker-orca");
         }
         else {
             if (app_config->get("associate_gcode") == "true")
@@ -6162,11 +6398,39 @@ void GUI_App::load_current_presets(bool active_preset_combox/*= false*/, bool ch
             tab->rebuild_page_tree();
         }
 
-    // Sidebar nozzle diameter combos depend on visible printer variants; rebuild after import / preset reload.
-    if (plater() != nullptr)
-        plater()->sidebar().update_nozzle_settings();
+    if (printer_technology == ptFFF && preset_bundle != nullptr) {
+        static const t_config_option_keys mixed_project_option_keys = {
+            "mixed_filament_gradient_mode",
+            "mixed_filament_height_lower_bound",
+            "mixed_filament_height_upper_bound",
+            "mixed_filament_advanced_dithering",
+            "mixed_filament_component_bias_enabled",
+            "mixed_filament_surface_indentation",
+            "mixed_filament_region_collapse",
+            "mixed_color_layer_height_a",
+            "mixed_color_layer_height_b",
+            "dithering_z_step_size",
+            "dithering_local_z_mode",
+            "dithering_local_z_whole_objects",
+            "dithering_local_z_direct_multicolor",
+            "dithering_step_painted_zones_only",
+            "mixed_filament_pointillism_pixel_size",
+            "mixed_filament_pointillism_line_gap",
+            "mixed_filament_definitions"
+        };
 
-    //load_filament_hot_bed_nozzle_relations();
+        // Keep the Mixed Filaments sidebar state in sync when presets are reloaded
+        // programmatically (for example after New Project). These options are also
+        // mirrored on manual edits in Tab::on_value_change(), but that path does
+        // not run when the current preset is simply reloaded.
+        preset_bundle->project_config.apply_only(
+            preset_bundle->prints.get_edited_preset().config,
+            mixed_project_option_keys,
+            true);
+
+        if (plater_ != nullptr)
+            sidebar().update_mixed_filament_panel(false);
+    }
 }
 
 static std::mutex mutex_delete_cache_presets;
@@ -6874,7 +7138,7 @@ bool GUI_App::config_wizard_startup()
         BOOST_LOG_TRIVIAL(info) << "finished run wizard";
 
         return true;
-    } 
+    }
 
     if (isAgree.empty()) 
     {
@@ -7062,15 +7326,11 @@ bool GUI_App::check_url_association(std::wstring url_prefix, std::wstring& reg_b
 {
     reg_bin = L"";
 #ifdef WIN32
-    const wxString cmd_path = "Software\\Classes\\" + wxString(url_prefix) + "\\shell\\open\\command";
-    wxRegKey      key_cu(wxRegKey::HKCU, cmd_path);
-    wxRegKey      key_lm(wxRegKey::HKLM, cmd_path);
-    if (key_cu.Exists())
-        reg_bin = key_cu.QueryDefaultValue().ToStdWstring();
-    else if (key_lm.Exists())
-        reg_bin = key_lm.QueryDefaultValue().ToStdWstring();
-    else
+    wxRegKey key_full(wxRegKey::HKCU, "Software\\Classes\\" + url_prefix + "\\shell\\open\\command");
+    if (!key_full.Exists()) {
         return false;
+    }
+    reg_bin = key_full.QueryDefaultValue().ToStdWstring();
 
     boost::filesystem::path binary_path(boost::filesystem::canonical(boost::dll::program_location()));
     std::wstring key_string = L"\"" + binary_path.wstring() + L"\" \"%1\"";

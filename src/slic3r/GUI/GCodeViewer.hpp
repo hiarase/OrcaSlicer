@@ -865,7 +865,7 @@ public:
                 m_extrusions.role_visibility_flags = m_extrusions.role_visibility_flags | (1 << role);
             }
         } else if (type == EViewType::ColorPrint){
-            m_tools.m_tool_visibles.assign(m_tools.m_tool_visibles.size(), true);
+            for(auto item: m_tools.m_tool_visibles) item = true;
         }
     }
 
@@ -889,7 +889,9 @@ public:
     void pop_combo_style();
 
 private:
-    void load_toolpaths(const GCodeProcessorResult& gcode_result, const BuildVolume& build_volume, const std::vector<BoundingBoxf3>& exclude_bounding_box);
+    void load_toolpaths(const GCodeProcessorResult& gcode_result, const BuildVolume& build_volume,
+                        const std::vector<BoundingBoxf3>& exclude_bounding_box, const std::vector<Vec3f>& extruder_offsets,
+                        bool suppress_toolpath_outside_for_mixed_filament);
     //BBS: always load shell at preview
     //void load_shells(const Print& print);
     void refresh_render_paths(bool keep_sequential_current_first, bool keep_sequential_current_last) const;
@@ -915,4 +917,3 @@ private:
 } // namespace Slic3r
 
 #endif // slic3r_GCodeViewer_hpp_
-

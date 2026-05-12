@@ -28,6 +28,7 @@
 #include "Flashforge.hpp"
 #include "SimplyPrint.hpp"
 #include "ElegooLink.hpp"
+#include "SnapmakerJ1.hpp"
 
 namespace fs = boost::filesystem;
 using boost::optional;
@@ -70,6 +71,7 @@ PrintHost* PrintHost::get_print_host(DynamicPrintConfig *config, bool change_eng
             case htFlashforge: return new Flashforge(config);
             case htSimplyPrint: return new SimplyPrint(config);
             case htElegooLink: return new ElegooLink(config);
+            case htSnapmakerJ1: return new SnapmakerJ1(config);
             default:          return nullptr;
         }
     } else {

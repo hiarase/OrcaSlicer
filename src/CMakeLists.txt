@@ -79,6 +79,9 @@ if (SLIC3R_GUI)
     # wrong libs for opengl in the link line and it does not link to it by himself.
     # libslic3r_gui will link to opengl anyway, so lets override wx
     list(FILTER wxWidgets_LIBRARIES EXCLUDE REGEX OpenGL)
+    if (APPLE)
+        list(FILTER wxWidgets_LIBRARIES EXCLUDE REGEX "(^|/)libGLU?\\.(a|dylib|tbd)$")
+    endif ()
 
 #    list(REMOVE_ITEM wxWidgets_LIBRARIES oleacc)
     message(STATUS "wx libs: ${wxWidgets_LIBRARIES}")
@@ -293,7 +296,7 @@ else ()
         set(MACOSX_BUNDLE_ICON_FILE Icon.icns)
         set_target_properties(Snapmaker_Orca PROPERTIES
             MACOSX_BUNDLE TRUE
-            MACOSX_BUNDLE_BUNDLE_NAME "Snapmaker Orca"
+            MACOSX_BUNDLE_BUNDLE_NAME "SnapmakerOrca-FullSpectrum"
             MACOSX_BUNDLE_SHORT_VERSION_STRING ${Snapmaker_VERSION}
             MACOSX_BUNDLE_COPYRIGHT "Copyright © 2024-2026 Snapmaker. All rights reserved.")
         # Get the bundle directory by going up from the executable to the .app bundle

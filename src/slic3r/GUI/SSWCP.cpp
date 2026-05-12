@@ -10,6 +10,7 @@
 #include <iterator>
 #include <exception>
 #include <cstdlib>
+#include <iomanip>
 #include <regex>
 #include <thread>
 #include <string_view>
@@ -1488,8 +1489,7 @@ void SSWCP_Instance::update_filament_info(const json& objects, bool send_message
                 return;
             }
 
-            if (!j_value.count("nozzle_diameters") ||!j_value.count("filament_vendor") || !j_value["filament_vendor"].is_array() ||
-                !j_value.count("filament_type") ||
+            if (!j_value.count("filament_vendor") || !j_value["filament_vendor"].is_array() || !j_value.count("filament_type") ||
                 !j_value["filament_type"].is_array() || !j_value.count("filament_sub_type") || !j_value["filament_sub_type"].is_array() ||
                 ((!j_value.count("filament_color") || !j_value["filament_color"].is_array()) &&
                  (!j_value.count("filament_color_rgba") || !j_value["filament_color_rgba"].is_array())) ||
@@ -1503,7 +1503,6 @@ void SSWCP_Instance::update_filament_info(const json& objects, bool send_message
 
             // 存储耗材，并触发更新
             auto& filaments = wxGetApp().preset_bundle->machine_filaments;
-            auto& machine_nozzles = wxGetApp().preset_bundle->m_connect_machine_info_list;
             static auto tmp_filaments = filaments;
 
             if (m_first_connected) {
@@ -1511,13 +1510,11 @@ void SSWCP_Instance::update_filament_info(const json& objects, bool send_message
                 m_first_connected = false;
             }
 
-            machine_nozzles.clear();
             filaments.clear();
 
             size_t count = 0;
             for (size_t i = 0; i < j_value["filament_official"].size(); ++i) {
                 bool is_official = j_value["filament_official"][i].get<bool>();
-                ConnectMachineInfo machineData;
                 if (/*is_official*/ true) {
                     std::string vendor   = j_value["filament_vendor"][i].get<std::string>();
                     std::string type     = j_value["filament_type"][i].get<std::string>();
@@ -1543,10 +1540,7 @@ void SSWCP_Instance::update_filament_info(const json& objects, bool send_message
                     if (j_value.count("filament_color_rgba") && j_value["filament_color_rgba"].is_array() &&
                         j_value["filament_color_rgba"].size() != 0) {
                         std::string str_color = "#" + j_value["filament_color_rgba"][i].get<std::string>();
-                        filaments.insert({int(i), {name, str_color}});    
-                        machineData.index = i;
-                        machineData.color_info = str_color;
-                        machineData.filament_info = name;
+                        filaments.insert({int(i), {name, str_color}});
                     } else {
                         if (j_value["filament_color"][i].is_number()) {
                             int                color = j_value["filament_color"][i].get<int>();
@@ -1556,20 +1550,11 @@ void SSWCP_Instance::update_filament_info(const json& objects, bool send_message
 
                             std::string str_color = oss.str();
                             filaments.insert({int(i), {name, str_color}});
-                            machineData.index         = i;
-                            machineData.color_info    = str_color;
-                            machineData.filament_info = name;
                         } else {
                             std::string str_color = "#" + j_value["filament_color"][i].get<std::string>();
                             filaments.insert({int(i), {name, str_color}});
-                            machineData.index         = i;
-                            machineData.color_info    = str_color;
-                            machineData.filament_info = name;
                         }
                     }
-                    if (j_value["nozzle_diameters"].is_array() && !j_value["nozzle_diameters"].empty())
-                        machineData.nozzle_info = j_value["nozzle_diameters"][i].get<std::string>();
-                    machine_nozzles.push_back(machineData);
                 }
             }
 
@@ -1582,7 +1567,7 @@ void SSWCP_Instance::update_filament_info(const json& objects, bool send_message
                 if (tmp_filaments.count(iter->first)) {
                     auto pair     = iter->second;
                     auto tmp_pair = tmp_filaments[iter->first];
-                    if (pair.first == tmp_pair.first && pair.second == tmp_pair.second) {
+                    if (pair.first == tmp_pair.first && pair.second == pair.second) {
                         continue;
                     } else {
                         need_load_preset = true;
@@ -3055,7 +3040,9 @@ void SSWCP_MachineOption_Instance::sw_GetFileFilamentMapping()
             return;
         }
 
-        auto& config = wxGetApp().plater()->get_partplate_list().get_curr_plate()->fff_print()->config();
+        auto* print = wxGetApp().plater()->get_partplate_list().get_curr_plate()->fff_print();
+        auto& config = print->config();
+        auto full_config = print->full_print_config();
         auto& result = *(wxGetApp().plater()->get_partplate_list().get_curr_plate()->get_slice_result());
         /*GCodeProcessor processor;
         processor.process_file(filename.data());
@@ -3107,10 +3094,37 @@ void SSWCP_MachineOption_Instance::sw_GetFileFilamentMapping()
         }
         
 
-        // filament type 
-        if (config.has("filament_type")) {
-            auto filament_type        = config.option<ConfigOptionStrings>("filament_type")->values;
-            response["filament_type"] = filament_type;
+        // filament type
+        if (full_config.has("filament_type")) {
+            std::vector<std::string> filament_types;
+            size_t                   filament_count = full_config.option<ConfigOptionStrings>("filament_type")->values.size();
+            if (full_config.has("filament_colour")) {
+                filament_count = std::max(filament_count, full_config.option<ConfigOptionStrings>("filament_colour")->values.size());
+            }
+
+            filament_types.reserve(filament_count);
+            for (size_t i = 0; i < filament_count; ++i) {
+                std::string displayed_filament_type;
+                std::string filament_type = full_config.get_filament_type(displayed_filament_type, int(i));
+                boost::trim(filament_type);
+                filament_types.emplace_back(std::move(filament_type));
+            }
+            response["filament_type"] = filament_types;
+        }
+
+        // file nozzle diameters
+        if (full_config.has("nozzle_diameter")) {
+            const auto *opt_nozzle_diameters = full_config.option<ConfigOptionFloats>("nozzle_diameter");
+            if (opt_nozzle_diameters != nullptr) {
+                std::vector<std::string> nozzle_diameters;
+                nozzle_diameters.reserve(opt_nozzle_diameters->values.size());
+                for (double diameter : opt_nozzle_diameters->values) {
+                    std::ostringstream stream;
+                    stream << std::fixed << std::setprecision(1) << diameter;
+                    nozzle_diameters.emplace_back(stream.str());
+                }
+                response["nozzle_diameters"] = nozzle_diameters;
+            }
         }
         
 
@@ -3137,25 +3151,6 @@ void SSWCP_MachineOption_Instance::sw_GetFileFilamentMapping()
                 object[std::to_string(item.first)] = std::to_string(item.second); 
             }
             response["filament_extruder_map"] = object;
-        }
-
-        //nozzle info
-        PartPlate*  cur_plate        = wxGetApp().plater()->get_partplate_list().get_curr_plate();      
-        if (cur_plate)
-        {
-            auto*  nozzle_opt = cur_plate->fff_print()->config().option<ConfigOptionFloats>("nozzle_diameter");
-            std::vector<std::string> nozzle_list;
-            if (nozzle_opt) {
-                for (float d : nozzle_opt->values) {
-                    nozzle_list.push_back(std::abs(d - 0.2f) < 1e-5f ? "0.2" :
-                                          std::abs(d - 0.4f) < 1e-5f ? "0.4" :
-                                          std::abs(d - 0.6f) < 1e-5f ? "0.6" :
-                                          std::abs(d - 0.8f) < 1e-5f ? "0.8" :
-                                                                       std::to_string(d));
-                }
-
-                response["nozzle_info"] = nozzle_list;
-            }
         }
 
         // printer model
@@ -5648,7 +5643,6 @@ void SSWCP_MqttAgent_Instance::sw_mqtt_set_engine()
                                             }
 
                                         } else {
-                      
                                             info.nozzle_sizes = nozzle_diameters;
                                             info.preset_name  = machine_type + " (" + nozzle_diameters[0] + " nozzle)";
                                             wxGetApp().app_config->save_device_info(info);
@@ -5844,13 +5838,13 @@ void SSWCP_MqttAgent_Instance::sw_mqtt_set_engine()
                                     // wxGetApp().mainframe->load_printer_url("http://" + ip);  //到时全部加载本地交互页面
 
                                     if (!wxGetApp().mainframe->m_printer_view->isSnapmakerPage()) {
-                                        wxString url      = wxString::FromUTF8(LOCALHOST_URL + std::to_string(wxGetApp().get_page_http_port()) +
+                                        wxString url      = wxString::FromUTF8(LOCALHOST_URL + std::to_string(PAGE_HTTP_PORT) +
                                                                                "/web/flutter_web/index.html?path=2");
                                         auto     real_url = wxGetApp().get_international_url(url);
                                         wxGetApp().mainframe->load_printer_url(real_url); // 到时全部加载本地交互页面
                                     } else {
                                         if (reload_device_view) {
-                                            wxString url      = wxString::FromUTF8(LOCALHOST_URL + std::to_string(wxGetApp().get_page_http_port()) +
+                                            wxString url      = wxString::FromUTF8(LOCALHOST_URL + std::to_string(PAGE_HTTP_PORT) +
                                                                                    "/web/flutter_web/index.html?path=2");
                                             auto     real_url = wxGetApp().get_international_url(url);
 

@@ -6,7 +6,7 @@
         "Snapmaker U1 (0.4 nozzle)"
     ],
     "enable_pressure_advance": [
-        "0"
+        "1"
     ],
     "filament_max_volumetric_speed": [
         "15"

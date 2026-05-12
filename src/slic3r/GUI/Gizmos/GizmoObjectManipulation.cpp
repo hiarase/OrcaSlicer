@@ -100,6 +100,13 @@ void delete_negative_sign(Vec3d& value) {
     }
 }
 
+static void use_selection_bottom_as_display_z(const Selection& selection, Vec3d& position)
+{
+    const BoundingBoxf3 box = selection.get_bounding_box();
+    if (box.defined)
+        position[Z] = box.min[Z];
+}
+
 void GizmoObjectManipulation::update_settings_value(const Selection &selection)
 {
 	m_new_move_label_string   = L("Position");
@@ -127,17 +134,19 @@ void GizmoObjectManipulation::update_settings_value(const Selection &selection)
             m_new_size  = selection.get_bounding_box_in_current_reference_system().first.size();
             m_unscale_size = selection.get_full_unscaled_instance_local_bounding_box().size();
             m_new_scale    = m_new_size.cwiseQuotient(m_unscale_size) * 100.0;
-		}
+	        }
+            use_selection_bottom_as_display_z(selection, m_new_position);
 
-        m_new_enabled  = true;
-        // BBS: change "Instance Operations" to "Object Operations"
+	        m_new_enabled  = true;
+	        // BBS: change "Instance Operations" to "Object Operations"
         m_new_title_string = L("Object Operations");
     }
-    else if (selection.is_single_full_object() && obj_list->is_selected(itObject)) {
-        const BoundingBoxf3& box = selection.get_bounding_box();
-        m_new_position = box.center();
-        m_new_scale    = Vec3d(100., 100., 100.);
-        m_new_size     = selection.get_bounding_box_in_current_reference_system().first.size();
+	    else if (selection.is_single_full_object() && obj_list->is_selected(itObject)) {
+	        const BoundingBoxf3& box = selection.get_bounding_box();
+	        m_new_position = box.center();
+	        m_new_position[Z] = box.min[Z];
+	        m_new_scale    = Vec3d(100., 100., 100.);
+	        m_new_size     = selection.get_bounding_box_in_current_reference_system().first.size();
 		m_new_scale_label_string  = L("Scale");
         m_new_enabled  = true;
         m_new_title_string = L("Object Operations");
@@ -167,18 +176,19 @@ void GizmoObjectManipulation::update_settings_value(const Selection &selection)
         }
         m_new_enabled = true;
         m_new_title_string = L("Volume Operations");
-    } else if (obj_list->is_connectors_item_selected() || obj_list->multiple_selection() || obj_list->is_selected(itInstanceRoot)) {
-        reset_settings_value();
-		m_new_move_label_string   = L("Translate");
-		m_new_scale_label_string  = L("Scale");
-        m_unscale_size            = selection.get_bounding_box_in_current_reference_system().first.size();
-        m_new_size                = selection.get_bounding_box_in_current_reference_system().first.size();
+	    } else if (obj_list->is_connectors_item_selected() || obj_list->multiple_selection() || obj_list->is_selected(itInstanceRoot)) {
+	        reset_settings_value();
+			m_new_move_label_string   = L("Translate");
+			m_new_scale_label_string  = L("Scale");
+	        m_unscale_size            = selection.get_bounding_box_in_current_reference_system().first.size();
+	        m_new_size                = selection.get_bounding_box_in_current_reference_system().first.size();
         m_new_enabled  = true;
         m_new_title_string = L("Group Operations");
-    } else if (selection.is_wipe_tower()) {
-        const BoundingBoxf3 &box = selection.get_bounding_box();
-        m_new_position           = box.center();
-    }
+	    } else if (selection.is_wipe_tower()) {
+	        const BoundingBoxf3 &box = selection.get_bounding_box();
+	        m_new_position           = box.center();
+	        m_new_position[Z]        = box.min[Z];
+	    }
 	else {
         // No selection, reset the cache.
 //		assert(selection.is_empty());

@@ -12,7 +12,7 @@
         "70"
     ],
     "enable_pressure_advance": [
-        "0"
+        "1"
     ],
     "filament_deretraction_speed": [
         "nil"
@@ -73,11 +73,5 @@
     ],
     "slow_down_layer_time": [
         "10"
-    ],
-    "graphic_effect_plate_temp": [
-        "35"
-    ],
-    "graphic_effect_plate_temp_initial_layer": [
-        "35"
     ]
 }

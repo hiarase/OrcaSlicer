@@ -30,7 +30,6 @@ void RadioGroup::Create(
 {
     m_labels = labels;
     m_item_count = m_labels.size();
-    m_item_enabled.assign(m_item_count, true);
 
     auto bg = parent->GetBackgroundColour();
     this->SetBackgroundColour(bg);
@@ -111,7 +110,7 @@ void RadioGroup::Create(
 
 void RadioGroup::SetSelection(int index, bool focus)
 {
-    if (index >= 0 && index < m_item_count && (m_item_enabled.empty() || m_item_enabled[index])) {
+    if (index >= 0 && index < m_item_count){
         int prev_index = m_selectedIndex;
         if(index != prev_index){ // prevent no focusable item on first creation. wxPanel starts taking focus if there is no focusable control
             m_labelButtons[index]->SetCanFocus(true);
@@ -137,31 +136,17 @@ int RadioGroup::GetSelection()
 
 void RadioGroup::SelectNext(bool focus)
 {
-    for (size_t k = 1; k < m_item_count; ++k) {
-        int idx = (m_selectedIndex + (int)k) % (int)m_item_count;
-        if (idx < (int)m_item_enabled.size() && m_item_enabled[idx]) {
-            SetSelection(idx, focus);
-            return;
-        }
-    }
+    SetSelection(m_selectedIndex + 1 > (m_radioButtons.size() - 1) ? 0 : m_selectedIndex + 1, focus);
 }
 
 void RadioGroup::SelectPrevious(bool focus)
 {
-    for (size_t k = 1; k < m_item_count; ++k) {
-        int idx = m_selectedIndex - (int)k;
-        if (idx < 0) idx += (int)m_item_count;
-        if (idx < (int)m_item_enabled.size() && m_item_enabled[idx]) {
-            SetSelection(idx, focus);
-            return;
-        }
-    }
+    SetSelection(m_selectedIndex - 1 < 0 ? (m_radioButtons.size() - 1) : m_selectedIndex - 1, focus);
 }
 
 void RadioGroup::SetRadioIcon(int i, bool hover)
 {
-    bool item_disabled = !m_enabled || (i < (int)m_item_enabled.size() && !m_item_enabled[i]);
-    auto icon = item_disabled ? m_disabled : m_selectedIndex == i ? (hover ? m_on_hover : m_on) : (hover ? m_off_hover : m_off);
+    auto icon = !m_enabled ? m_disabled : m_selectedIndex == i ? (hover ? m_on_hover : m_on) : (hover ? m_off_hover : m_off);
     m_radioButtons[i]->SetBitmap(icon.bmp());
 }
 
@@ -173,9 +158,7 @@ bool RadioGroup::Enable(bool enable)
     if (result) {
         for (size_t i = 0; i < m_item_count; ++i){
             SetRadioIcon(i, false);
-            bool item_on = enable && (i >= m_item_enabled.size() || m_item_enabled[i]);
-            m_labelButtons[i]->Enable(item_on);
-            m_radioButtons[i]->Enable(item_on);
+            m_labelButtons[i]->Enable(enable); // normally disabling parent should do this but not
         }
 
         wxCommandEvent e(EVT_ENABLE_CHANGED);
@@ -196,22 +179,4 @@ void RadioGroup::SetRadioTooltip(int i, wxString tooltip)
 {
     m_radioButtons[i]->SetToolTip(tooltip);
     m_labelButtons[i]->SetToolTip(tooltip);
-}
-
-void RadioGroup::SetItemEnabled(int index, bool enable)
-{
-    if (index < 0 || index >= m_item_count) return;
-    if ((int)m_item_enabled.size() != m_item_count)
-        m_item_enabled.assign(m_item_count, true);
-    m_item_enabled[index] = enable;
-    m_radioButtons[index]->Enable(enable);
-    m_labelButtons[index]->Enable(enable);
-    SetRadioIcon(index, false);
-    if (!enable && m_selectedIndex == index) {
-        for (int i = 0; i < m_item_count; ++i)
-            if (m_item_enabled[i]) {
-                SetSelection(i, false);
-                break;
-            }
-    }
 }

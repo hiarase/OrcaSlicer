@@ -243,6 +243,27 @@ static void reset_instance_transformation(ModelObject* object, size_t src_instan
     }
 }
 
+static void reset_object_z_origin_to_bottom(ModelObject* object)
+{
+    if (object == nullptr || object->volumes.empty())
+        return;
+
+    const BoundingBoxf3 raw_bbox = object->raw_mesh_bounding_box();
+    if (!raw_bbox.defined || std::abs(raw_bbox.min[Z]) < EPSILON)
+        return;
+
+    const Vec3d shift = -raw_bbox.min[Z] * Vec3d::UnitZ();
+    object->translate(shift);
+    object->origin_translation += shift;
+    object->translate_instances(-shift);
+    object->invalidate_bounding_box();
+}
+
+static void reset_cut_objects_z_origin_to_bottom(const ModelObjectPtrs& objects)
+{
+    for (ModelObject* object : objects)
+        reset_object_z_origin_to_bottom(object);
+}
 
 Cut::Cut(const ModelObject* object, int instance, const Transform3d& cut_matrix,
          ModelObjectCutAttributes attributes/*= ModelObjectCutAttribute::KeepUpper | ModelObjectCutAttribute::KeepLower | ModelObjectCutAttribute::KeepAsParts*/)
@@ -378,6 +399,7 @@ const ModelObjectPtrs& Cut::perform_with_plane()
 
     BOOST_LOG_TRIVIAL(trace) << "ModelObject::cut - end";
 
+    reset_cut_objects_z_origin_to_bottom(cut_object_ptrs);
     finalize(cut_object_ptrs);
 
     return m_model.objects;
@@ -471,12 +493,13 @@ const ModelObjectPtrs& Cut::perform_by_contour(std::vector<Part> parts, int dowe
         // Just add Upper and Lower objects to cut_object_ptrs
         post_process(upper, lower, cut_object_ptrs);
 
-        // Now merge all model parts together:
-        merge_solid_parts_inside_object(cut_object_ptrs);
+	        // Now merge all model parts together:
+	        merge_solid_parts_inside_object(cut_object_ptrs);
 
-        // replace initial objects in model with cut object 
-        finalize(cut_object_ptrs);
-    }
+	        // replace initial objects in model with cut object 
+	        reset_cut_objects_z_origin_to_bottom(cut_object_ptrs);
+	        finalize(cut_object_ptrs);
+	    }
     else if (volumes.size() > cut_parts_cnt) {
         // Means that object is cut with connectors
 
@@ -505,8 +528,9 @@ const ModelObjectPtrs& Cut::perform_by_contour(std::vector<Part> parts, int dowe
         // Now merge all model parts together:
         merge_solid_parts_inside_object(cut_object_ptrs);
 
-        // replace initial objects in model with cut object
-        finalize(cut_object_ptrs);
+	        // replace initial objects in model with cut object
+	        reset_cut_objects_z_origin_to_bottom(cut_object_ptrs);
+	        finalize(cut_object_ptrs);
 
         // Add Dowel-connectors as separate objects to model
         if (cut_connectors_obj.size() >= 3)
@@ -656,12 +680,12 @@ const ModelObjectPtrs& Cut::perform_with_groove(const Groove& groove, const Tran
 
         // Now merge all model parts together:
         merge_solid_parts_inside_object(cut_object_ptrs);
-    }
+	    }
 
-    finalize(cut_object_ptrs);
+	    reset_cut_objects_z_origin_to_bottom(cut_object_ptrs);
+	    finalize(cut_object_ptrs);
 
-    return m_model.objects;
+	    return m_model.objects;
 }
 
 } // namespace Slic3r
-

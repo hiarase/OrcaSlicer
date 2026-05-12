@@ -587,6 +587,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/SerialMessageType.hpp
     Utils/SimplyPrint.cpp
     Utils/SimplyPrint.hpp
+    Utils/SnapmakerJ1.cpp
+    Utils/SnapmakerJ1.hpp
     Utils/TCPConsole.cpp
     Utils/TCPConsole.hpp
     Utils/UndoRedo.cpp
@@ -598,8 +600,6 @@ set(SLIC3R_GUI_SOURCES
     Utils/MQTT.cpp
     Utils/MoonRaker.cpp
     Utils/MoonRaker.hpp
-    Utils/TimeSyncManager.cpp
-    Utils/TimeSyncManager.hpp
     Utils/TimeoutMap.hpp
 )
 

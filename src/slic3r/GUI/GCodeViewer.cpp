@@ -39,6 +39,7 @@
 #include <array>
 #include <algorithm>
 #include <chrono>
+#include <functional>
 
 namespace Slic3r {
 namespace GUI {
@@ -78,9 +79,111 @@ static std::string get_view_type_string(GCodeViewer::EViewType view_type)
         return _u8L("Filament");
     else if (view_type == GCodeViewer::EViewType::LayerTime)
         return _u8L("Layer Time");
-else if (view_type == GCodeViewer::EViewType::LayerTimeLog)
+	else if (view_type == GCodeViewer::EViewType::LayerTimeLog)
         return _u8L("Layer Time (log)");
     return "";
+}
+
+static std::vector<Vec3f> gcode_viewer_extruder_offsets(const PrintConfig& config)
+{
+    const size_t extruders_count = config.filament_diameter.values.size();
+    std::vector<Vec3f> offsets;
+    offsets.reserve(extruders_count);
+
+    if (!config.extruder_offset.values.empty()) {
+        if (config.single_extruder_multi_material.value) {
+            const Vec2f offset = config.extruder_offset.values.front().cast<float>();
+            offsets.assign(extruders_count, Vec3f(offset.x(), offset.y(), 0.0f));
+        } else {
+            for (const Vec2d& offset : config.extruder_offset.values)
+                offsets.emplace_back(float(offset.x()), float(offset.y()), 0.0f);
+        }
+    }
+
+    while (offsets.size() < extruders_count)
+        offsets.emplace_back(Vec3f::Zero());
+
+    return offsets;
+}
+
+static bool gcode_viewer_uses_mixed_filament(const PrintConfig& config)
+{
+    return config.mixed_filament_definitions.value.find_first_not_of(" \t\r\n") != std::string::npos;
+}
+
+static Vec3f gcode_viewer_unoffset_position(const Vec3f& position, const GCodeProcessorResult::MoveVertex& move,
+                                            const std::vector<Vec3f>& extruder_offsets)
+{
+    return move.extruder_id < extruder_offsets.size() ? position - extruder_offsets[move.extruder_id] : position;
+}
+
+static bool gcode_viewer_bed_check_move_valid(const GCodeProcessorResult::MoveVertex& move)
+{
+    return move.type == EMoveType::Extrude && move.extrusion_role != erCustom && move.width != 0.0f && move.height != 0.0f;
+}
+
+static bool gcode_viewer_all_paths_inside_without_extruder_offsets(const GCodeProcessorResult& gcode_result, const BuildVolume& build_volume,
+                                                                   const BoundingBoxf3& paths_bbox,
+                                                                   const std::vector<Vec3f>& extruder_offsets)
+{
+    if (empty(paths_bbox))
+        return true;
+
+    static constexpr const double epsilon = BuildVolume::BedEpsilon;
+
+    auto all_points_inside = [&](const std::function<bool(const Vec3f&)>& inside) {
+        for (const GCodeProcessorResult::MoveVertex& move : gcode_result.moves) {
+            if (!gcode_viewer_bed_check_move_valid(move))
+                continue;
+
+            if (!inside(gcode_viewer_unoffset_position(move.position, move, extruder_offsets)))
+                return false;
+
+            if (move.is_arc_move_with_interpolation_points()) {
+                for (const Vec3f& interpolation_point : move.interpolation_points)
+                    if (!inside(gcode_viewer_unoffset_position(interpolation_point, move, extruder_offsets)))
+                        return false;
+            }
+        }
+        return true;
+    };
+
+    switch (build_volume.type()) {
+    case BuildVolume_Type::Rectangle:
+    {
+        BoundingBox3Base<Vec3d> volume = build_volume.bounding_volume().inflated(epsilon);
+        if (build_volume.printable_height() == 0.0)
+            volume.max.z() = std::numeric_limits<double>::max();
+        volume.min.z() = -std::numeric_limits<double>::max();
+        return volume.contains(paths_bbox);
+    }
+    case BuildVolume_Type::Circle:
+    {
+        const Vec2f c  = unscaled<float>(build_volume.circle().center);
+        const float r2 = sqr(float(unscaled<double>(build_volume.circle().radius) + epsilon));
+        if (build_volume.printable_height() == 0.0)
+            return all_points_inside([c, r2](const Vec3f& pos) { return (to_2d(pos) - c).squaredNorm() <= r2; });
+
+        const float z = float(build_volume.printable_height() + epsilon);
+        return all_points_inside([c, r2, z](const Vec3f& pos) { return (to_2d(pos) - c).squaredNorm() <= r2 && pos.z() <= z; });
+    }
+    case BuildVolume_Type::Convex:
+    case BuildVolume_Type::Custom:
+    {
+        if (build_volume.printable_height() == 0.0)
+            return all_points_inside([&build_volume](const Vec3f& pos) {
+                return Geometry::inside_convex_polygon(build_volume.top_bottom_convex_hull_decomposition_bed(), to_2d(pos).cast<double>());
+            });
+
+        const float z = float(build_volume.printable_height() + epsilon);
+        return all_points_inside([&build_volume, z](const Vec3f& pos) {
+            return Geometry::inside_convex_polygon(build_volume.top_bottom_convex_hull_decomposition_bed(), to_2d(pos).cast<double>()) &&
+                   pos.z() <= z;
+        });
+    }
+    default:
+        return true;
+    }
 }
 
 static unsigned char buffer_id(EMoveType type) {
@@ -969,7 +1072,9 @@ void GCodeViewer::load(const GCodeProcessorResult& gcode_result, const Print& pr
 
     m_max_print_height = gcode_result.printable_height;
 
-    load_toolpaths(gcode_result, build_volume, exclude_bounding_box);
+    const PrintConfig& print_config = print.config();
+    load_toolpaths(gcode_result, build_volume, exclude_bounding_box, gcode_viewer_extruder_offsets(print_config),
+                   gcode_viewer_uses_mixed_filament(print_config));
 
     //BBS: add mutex for protection of gcode result
     if (m_layers.empty()) {
@@ -1106,12 +1211,14 @@ void GCodeViewer::refresh(const GCodeProcessorResult& gcode_result, const std::v
     if (m_view_type == EViewType::Tool && !gcode_result.extruder_colors.empty()) {
         // update tool colors from config stored in the gcode
         decode_colors(gcode_result.extruder_colors, m_tools.m_tool_colors);
-        m_tools.m_tool_visibles.assign(m_tools.m_tool_colors.size(), true);
+        m_tools.m_tool_visibles = std::vector<bool>(m_tools.m_tool_colors.size());
+        for (auto item: m_tools.m_tool_visibles) item = true;
     }
     else {
         // update tool colors
         decode_colors(str_tool_colors, m_tools.m_tool_colors);
-        m_tools.m_tool_visibles.assign(m_tools.m_tool_colors.size(), true);
+        m_tools.m_tool_visibles = std::vector<bool>(m_tools.m_tool_colors.size());
+        for (auto item : m_tools.m_tool_visibles) item = true;
     }
 
     for (int i = 0; i < m_tools.m_tool_colors.size(); i++) {
@@ -2009,7 +2116,10 @@ void GCodeViewer::export_toolpaths_to_obj(const char* filename) const
     fclose(fp);
 }
 
-void GCodeViewer::load_toolpaths(const GCodeProcessorResult& gcode_result, const BuildVolume& build_volume, const std::vector<BoundingBoxf3>& exclude_bounding_box)
+void GCodeViewer::load_toolpaths(const GCodeProcessorResult& gcode_result, const BuildVolume& build_volume,
+                                 const std::vector<BoundingBoxf3>& exclude_bounding_box,
+                                 const std::vector<Vec3f>& extruder_offsets,
+                                 bool suppress_toolpath_outside_for_mixed_filament)
 {
     // max index buffer size, in bytes
     static const size_t IBUFFER_THRESHOLD_BYTES = 64 * 1024 * 1024;
@@ -2348,6 +2458,7 @@ void GCodeViewer::load_toolpaths(const GCodeProcessorResult& gcode_result, const
 
     //BBS: use convex_hull for toolpath outside check
     Points pts;
+    BoundingBoxf3 bed_check_paths_bounding_box;
 
     // extract approximate paths bounding box from result
     //BBS: add only gcode mode
@@ -2358,10 +2469,12 @@ void GCodeViewer::load_toolpaths(const GCodeProcessorResult& gcode_result, const
         //    m_paths_bounding_box.merge(move.position.cast<double>());
         //}
         //else {
-            if (move.type == EMoveType::Extrude && move.extrusion_role != erCustom && move.width != 0.0f && move.height != 0.0f) {
+            if (gcode_viewer_bed_check_move_valid(move)) {
                 m_paths_bounding_box.merge(move.position.cast<double>());
                 //BBS: use convex_hull for toolpath outside check
-                pts.emplace_back(Point(scale_(move.position.x()), scale_(move.position.y())));
+                const Vec3f bed_check_position = gcode_viewer_unoffset_position(move.position, move, extruder_offsets);
+                bed_check_paths_bounding_box.merge(bed_check_position.cast<double>());
+                pts.emplace_back(Point(scale_(bed_check_position.x()), scale_(bed_check_position.y())));
             }
         //}
     }
@@ -2377,11 +2490,13 @@ void GCodeViewer::load_toolpaths(const GCodeProcessorResult& gcode_result, const
         //    for (int i = 0; i < move.interpolation_points.size(); i++)
         //        m_paths_bounding_box.merge(move.interpolation_points[i].cast<double>());
         //else {
-            if (move.type == EMoveType::Extrude && move.width != 0.0f && move.height != 0.0f)
+            if (gcode_viewer_bed_check_move_valid(move))
                 for (int i = 0; i < move.interpolation_points.size(); i++) {
                     m_paths_bounding_box.merge(move.interpolation_points[i].cast<double>());
                     //BBS: use convex_hull for toolpath outside check
-                    pts.emplace_back(Point(scale_(move.interpolation_points[i].x()), scale_(move.interpolation_points[i].y())));
+                    const Vec3f bed_check_position = gcode_viewer_unoffset_position(move.interpolation_points[i], move, extruder_offsets);
+                    bed_check_paths_bounding_box.merge(bed_check_position.cast<double>());
+                    pts.emplace_back(Point(scale_(bed_check_position.x()), scale_(bed_check_position.y())));
                 }
         //}
     }
@@ -2396,7 +2511,8 @@ void GCodeViewer::load_toolpaths(const GCodeProcessorResult& gcode_result, const
     //if (wxGetApp().is_editor())
     {
         //BBS: use convex_hull for toolpath outside check
-        m_contained_in_bed = build_volume.all_paths_inside(gcode_result, m_paths_bounding_box);
+        m_contained_in_bed = gcode_viewer_all_paths_inside_without_extruder_offsets(gcode_result, build_volume,
+                                                                                    bed_check_paths_bounding_box, extruder_offsets);
         if (m_contained_in_bed) {
             //PartPlateList& partplate_list = wxGetApp().plater()->get_partplate_list();
             //PartPlate* plate = partplate_list.get_curr_plate();
@@ -2416,6 +2532,8 @@ void GCodeViewer::load_toolpaths(const GCodeProcessorResult& gcode_result, const
                 }
             }
         }
+        if (suppress_toolpath_outside_for_mixed_filament)
+            m_contained_in_bed = true;
         (const_cast<GCodeProcessorResult&>(gcode_result)).toolpath_outside = !m_contained_in_bed;
     }
 
@@ -5883,4 +6001,3 @@ ColorRGBA GCodeViewer::option_color(EMoveType move_type) const
 
 } // namespace GUI
 } // namespace Slic3r
-

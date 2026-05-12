@@ -29,8 +29,11 @@ GLGizmoMove3D::GLGizmoMove3D(GLCanvas3D& parent, const std::string& icon_filenam
 std::string GLGizmoMove3D::get_tooltip() const
 {
     const Selection& selection = m_parent.get_selection();
-    bool show_position = selection.is_single_full_instance();
-    const Vec3d& position = selection.get_bounding_box().center();
+	    bool show_position = selection.is_single_full_instance();
+	    const BoundingBoxf3 box = selection.get_bounding_box();
+	    Vec3d position = box.center();
+	    if (box.defined)
+	        position[Z] = box.min[Z];
 
     if (m_hover_id == 0 || m_grabbers[0].dragging)
         return "X: " + format(show_position ? position(0) : m_displacement(0), 2);

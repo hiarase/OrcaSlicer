@@ -9,7 +9,7 @@
         "Snapmaker U1 (0.4 nozzle)"
     ],
     "enable_pressure_advance": [
-        "0"
+        "1"
     ],
     "filament_end_gcode": [
         ""
@@ -45,12 +45,6 @@
         "65"
     ],
     "hot_plate_temp_initial_layer": [
-        "65"
-    ],
-    "graphic_effect_plate_temp": [
-        "65"
-    ],
-    "graphic_effect_plate_temp_initial_layer": [
         "65"
     ]
 }
